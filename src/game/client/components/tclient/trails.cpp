@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <engine/graphics.h>
 #include <engine/shared/config.h>
 #include <game/generated/protocol.h>
@@ -8,40 +9,28 @@
 #include "trails.h"
 #include <game/client/gameclient.h>
 
-CTrails::CTrails()
-{
-}
 bool CTrails::ShouldPredictPlayer(int ClientId)
 {
 	if(!GameClient()->Predict())
 		return false;
-	CCharacter *pChar = GameClient()->m_PredictedWorld.GetCharacterById(ClientId);
-	if(GameClient()->Predict() && (ClientId == GameClient()->m_Snap.m_LocalClientId || (GameClient()->AntiPingPlayers() && !GameClient()->IsOtherTeam(ClientId))) && pChar)
-		return true;
-	return false;
+	return GameClient()->m_PredictedWorld.GetCharacterById(ClientId) && (ClientId == GameClient()->m_Snap.m_LocalClientId || (GameClient()->AntiPingPlayers() && !GameClient()->IsOtherTeam(ClientId)));
 }
 
 void CTrails::ClearAllHistory()
 {
 	for(int i = 0; i < MAX_CLIENTS; ++i)
-		for(int j = 0; j < 200; ++j)
-			m_PositionTick[i][j] = -1;
-
-	for(int i = 0; i < MAX_CLIENTS; ++i)
-		for(int j = 0; j < 200; ++j)
-			m_PositionHistory[i][j] = vec2(0, 0);
-
-	for(int i = 0; i < MAX_CLIENTS; ++i)
-		m_HistoryValid[i] = false;
+		ClearHistory(i);
 }
+
 void CTrails::ClearHistory(int ClientId)
 {
 	for(int j = 0; j < 200; ++j)
 		m_PositionTick[ClientId][j] = -1;
 	for(int j = 0; j < 200; ++j)
-		m_PositionHistory[ClientId][j] = vec2(0, 0);
+		m_PositionHistory[ClientId][j] = {};
 	m_HistoryValid[ClientId] = false;
 }
+
 void CTrails::OnReset()
 {
 	ClearAllHistory();
@@ -61,27 +50,23 @@ void CTrails::OnRender()
 	Graphics()->TextureClear();
 	GameClient()->RenderTools()->MapScreenToGroup(GameClient()->m_Camera.m_Center.x, GameClient()->m_Camera.m_Center.y, GameClient()->Layers()->GameGroup(), GameClient()->m_Camera.m_Zoom);
 
-	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+#define LOCAL_ID m_pClient->m_Snap.m_LocalClientId
+	for(int ClientId = g_Config.m_ClTeeTrailOthers ? 0 : LOCAL_ID; ClientId < (g_Config.m_ClTeeTrailOthers ? MAX_CLIENTS : LOCAL_ID + 1); ClientId++)
 	{
-		bool Local = m_pClient->m_Snap.m_LocalClientId == ClientId;
-		if(!g_Config.m_ClTeeTrailOthers && !Local)
-			continue;
-
 		if(!m_pClient->m_Snap.m_aCharacters[ClientId].m_Active)
 		{
 			if(m_HistoryValid[ClientId])
 				ClearHistory(ClientId);
 			continue;
 		}
-		else
-			m_HistoryValid[ClientId] = true;
+		m_HistoryValid[ClientId] = true;
 
-		CTeeRenderInfo TeeInfo = m_pClient->m_aClients[ClientId].m_RenderInfo;
+		const CTeeRenderInfo TeeInfo = m_pClient->m_aClients[ClientId].m_RenderInfo;
 
-		bool PredictPlayer = ShouldPredictPlayer(ClientId);
-		int StartTick;
+		const bool PredictPlayer = ShouldPredictPlayer(ClientId);
 		const int GameTick = Client()->GameTick(g_Config.m_ClDummy);
 		const int PredTick = Client()->PredGameTick(g_Config.m_ClDummy);
+		int StartTick;
 		float IntraTick;
 		if(PredictPlayer)
 		{
@@ -92,10 +77,8 @@ void CTrails::OnRender()
 				StartTick = GameClient()->m_SmoothTick[g_Config.m_ClDummy];
 				IntraTick = GameClient()->m_SmoothIntraTick[g_Config.m_ClDummy];
 			}
-			if(g_Config.m_ClUnpredOthersInFreeze && !Local && g_Config.m_ClAmIFrozen)
-			{
+			if(g_Config.m_ClUnpredOthersInFreeze && ClientId != LOCAL_ID && g_Config.m_ClAmIFrozen)
 				StartTick = GameTick;
-			}
 		}
 		else
 		{
@@ -105,7 +88,12 @@ void CTrails::OnRender()
 
 		vec2 CurServerPos = vec2(GameClient()->m_Snap.m_aCharacters[ClientId].m_Cur.m_X, GameClient()->m_Snap.m_aCharacters[ClientId].m_Cur.m_Y);
 		vec2 PrevServerPos = vec2(GameClient()->m_Snap.m_aCharacters[ClientId].m_Prev.m_X, GameClient()->m_Snap.m_aCharacters[ClientId].m_Prev.m_Y);
-		m_PositionHistory[ClientId][GameTick % 200] = mix(PrevServerPos, CurServerPos, Client()->IntraGameTick(g_Config.m_ClDummy));
+		m_PositionHistory[ClientId][GameTick % 200] = {mix(PrevServerPos, CurServerPos, Client()->IntraGameTick(g_Config.m_ClDummy)), vec2(GameClient()->m_Snap.m_aCharacters[ClientId].m_Cur.m_VelX, GameClient()->m_Snap.m_aCharacters[ClientId].m_Cur.m_VelY)};
+
+		// NOTE: this is kind of a hack to fix 25tps. This fixes flickering when using the speed mode
+		m_PositionHistory[ClientId][(GameTick + 1) % 200] = m_PositionHistory[ClientId][GameTick % 200];
+		m_PositionHistory[ClientId][(GameTick + 2) % 200] = m_PositionHistory[ClientId][GameTick % 200];
+
 		m_PositionTick[ClientId][GameTick % 200] = GameTick;
 
 		// Slightly messy way to make the position of our player accurate without ugly logic in the loop
@@ -113,23 +101,15 @@ void CTrails::OnRender()
 		GameClient()->m_aClients[ClientId].m_aPredPos[PredTick % 200] = GameClient()->m_aClients[ClientId].m_RenderPos;
 
 		IGraphics::CLineItem LineItem;
-		bool LineMode = g_Config.m_ClTeeTrailWidth == 0;
+		bool LineMode = !g_Config.m_ClTeeTrailWidth;
 
-		float Alpha = g_Config.m_ClTeeTrailAlpha / 100.0f;
-		ColorRGBA Col = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClTeeTrailColor));
-		if(TeeInfo.m_CustomColoredSkin && g_Config.m_ClTeeTrailUseTeeColor)
-			Col = TeeInfo.m_ColorBody;
-		else if(g_Config.m_ClTeeTrailUseTeeColor)
-			Col = TeeInfo.m_BloodColor;
-
-		ColorRGBA FullCol = Col.WithAlpha(Alpha);
-		Graphics()->SetColor(FullCol);
+		const float Alpha = g_Config.m_ClTeeTrailAlpha / 100.0f;
 
 		int TrailLength = g_Config.m_ClTeeTrailLength;
 		float Width = g_Config.m_ClTeeTrailWidth;
 
-		static std::vector<STrailPart> Trail;
-		Trail.clear();
+		static std::vector<STrailPart> s_Trail;
+		s_Trail.clear();
 
 		// TODO: figure out why this is required
 		if(!PredictPlayer)
@@ -150,43 +130,62 @@ void CTrails::OnRender()
 			{
 				if(m_PositionTick[ClientId][PosTick % 200] != PosTick)
 					continue;
-				Part.Pos = m_PositionHistory[ClientId][PosTick % 200];
+				Part.Pos = m_PositionHistory[ClientId][PosTick % 200].m_Pos;
 			}
-			Trail.push_back(Part);
+			s_Trail.push_back(Part);
 		}
 
 		// Trim the ends if intratick is too big
 		// this was not trivial to figure out
 		int TrimTicks = (int)IntraTick;
 		for(int i = 0; i < TrimTicks; i++)
-			Trail.pop_back();
+			s_Trail.pop_back();
 
 		// Stuff breaks if we have less than 3 points because we cannot calculate an angle between segments to preserve constant width
 		// TODO: Pad the list with generated entries in the same direction as before
-		if((int)Trail.size() < 3)
+		if((int)s_Trail.size() < 3)
 			continue;
 
-		Trail.at(Trail.size() - 1).Pos = mix(Trail.at(Trail.size() - 1).Pos, Trail.at(Trail.size() - 2).Pos, std::fmod(IntraTick, 1.0f));
+		s_Trail.at(s_Trail.size() - 1).Pos = mix(s_Trail.at(s_Trail.size() - 1).Pos, s_Trail.at(s_Trail.size() - 2).Pos, std::fmod(IntraTick, 1.0f));
 
 		// Set progress
-		for(int i = 0; i < (int)Trail.size(); i++)
+		for(int i = 0; i < (int)s_Trail.size(); i++)
 		{
-			float Size = float(Trail.size() - 1 + TrimTicks);
-			STrailPart &Part = Trail.at(i);
+			float Size = float(s_Trail.size() - 1 + TrimTicks);
+			STrailPart &Part = s_Trail.at(i);
 			if(i == 0)
 				Part.Progress = 0.0f;
-			else if(i == (int)Trail.size() - 1)
+			else if(i == (int)s_Trail.size() - 1)
 				Part.Progress = 1.0f;
 			else
-				Part.Progress = ((float)(i) + IntraTick - 1.0f) / (Size - 1.0f);
+				Part.Progress = ((float)i + IntraTick - 1.0f) / (Size - 1.0f);
 
-			Part.Col = Col;
 			Part.Alpha = Alpha;
-			if(g_Config.m_ClTeeTrailRainbow)
+			switch(g_Config.m_ClTeeTrailColorMode)
+			{
+			case TRAIL_COLOR_MODES::MODE_SOLID:
+				Part.Col = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClTeeTrailColor));
+				break;
+			case TRAIL_COLOR_MODES::MODE_TEE:
+			{
+				if(TeeInfo.m_CustomColoredSkin)
+					Part.Col = TeeInfo.m_ColorBody;
+				else
+					Part.Col = TeeInfo.m_BloodColor;
+				break;
+			}
+			case TRAIL_COLOR_MODES::MODE_RAINBOW:
 			{
 				float Cycle = (1.0f / TrailLength) * 0.5f;
 				float Hue = std::fmod(((StartTick - i + 6361 * ClientId) % 1000000) * Cycle, 1.0f);
 				Part.Col = color_cast<ColorRGBA>(ColorHSLA(Hue, 1.0f, 0.5f));
+				break;
+			}
+			case TRAIL_COLOR_MODES::MODE_SPEED:
+			{
+				Part.Col = color_cast<ColorRGBA>(ColorHSLA(65280 * (((int)length(m_PositionHistory[ClientId][(StartTick - i) % 200].m_Vel / 256.f) + 1))).UnclampLighting(ColorHSLA::DARKEST_LGT));
+				break;
+			}
 			}
 
 			Part.Width = g_Config.m_ClTeeTrailWidth;
@@ -196,35 +195,35 @@ void CTrails::OnRender()
 				Part.Alpha = Alpha * (1.0 - Part.Progress);
 		}
 
-		auto NewEnd = std::unique(Trail.begin(), Trail.end());
-		Trail.erase(NewEnd, Trail.end());
+		auto NewEnd = std::unique(s_Trail.begin(), s_Trail.end());
+		s_Trail.erase(NewEnd, s_Trail.end());
 
-		if((int)Trail.size() < 3)
+		if((int)s_Trail.size() < 3)
 			continue;
 
 		// Calculate the widths
-		for(int i = 0; i < (int)Trail.size(); i++)
+		for(int i = 0; i < (int)s_Trail.size(); i++)
 		{
-			STrailPart &Part = Trail.at(i);
+			STrailPart &Part = s_Trail.at(i);
 			vec2 PrevPos;
-			vec2 Pos = Trail.at(i).Pos;
+			vec2 Pos = s_Trail.at(i).Pos;
 			vec2 NextPos;
 
 			if(i == 0)
 			{
-				vec2 Direction = normalize(Trail.at(i + 1).Pos - Pos);
+				vec2 Direction = normalize(s_Trail.at(i + 1).Pos - Pos);
 				PrevPos = Pos - Direction;
 			}
 			else
-				PrevPos = Trail.at(i - 1).Pos;
+				PrevPos = s_Trail.at(i - 1).Pos;
 
-			if(i == (int)Trail.size() - 1)
+			if(i == (int)s_Trail.size() - 1)
 			{
-				vec2 Direction = normalize(Pos - Trail.at(i - 1).Pos);
+				vec2 Direction = normalize(Pos - s_Trail.at(i - 1).Pos);
 				NextPos = Pos + Direction;
 			}
 			else
-				NextPos = Trail.at(i + 1).Pos;
+				NextPos = s_Trail.at(i + 1).Pos;
 
 			vec2 NextDirection = normalize(NextPos - Pos);
 			vec2 PrevDirection = normalize(Pos - PrevPos);
@@ -245,8 +244,8 @@ void CTrails::OnRender()
 			else
 				BotScaled = std::min(Width * 3.0f, BotScaled);
 
-			vec2 Top = Pos + PerpVec * ScaledWidth;
-			vec2 Bot = Pos - PerpVec * ScaledWidth;
+			vec2 Top = Pos + PerpVec * TopScaled;
+			vec2 Bot = Pos - PerpVec * BotScaled;
 			Part.Top = Top;
 			Part.Bot = Bot;
 
@@ -262,14 +261,14 @@ void CTrails::OnRender()
 				if(Det >= 0.0f)
 				{
 					if(i > 0)
-						Trail.at(i).Flip = true;
+						s_Trail.at(i).Flip = true;
 				}
 				else // <-Left Direction
 				{
 					Part.Top = Bot;
 					Part.Bot = Top;
 					if(i > 0)
-						Trail.at(i).Flip = true;
+						s_Trail.at(i).Flip = true;
 				}
 			}
 		}
@@ -279,44 +278,35 @@ void CTrails::OnRender()
 		else
 			Graphics()->TrianglesBegin();
 
-		int SegmentCount = (int)Trail.size() - 1;
+		int SegmentCount = (int)s_Trail.size() - 1;
 		// Draw the trail
 		for(int i = 0; i < SegmentCount; i++)
 		{
-			float InverseProgress = 1.0 - Trail.at(i).Progress;
-			if(g_Config.m_ClTeeTrailFade)
-			{
-				float FadeAlpha = Alpha * InverseProgress;
-				FullCol = Col.WithAlpha(FadeAlpha);
-				Graphics()->SetColor(FullCol);
-			}
-
-			vec2 Pos = Trail.at(i).Pos;
-			vec2 NextPos = Trail.at(i + 1).Pos;
+			vec2 Pos = s_Trail.at(i).Pos;
+			vec2 NextPos = s_Trail.at(i + 1).Pos;
 			if(distance(Pos, NextPos) > 600.0f)
 				continue;
-			Graphics()->SetColor(FullCol);
 			if(LineMode)
 			{
-				Graphics()->SetColor(Trail.at(i).Col.WithAlpha(Trail.at(i).Alpha));
+				Graphics()->SetColor(s_Trail.at(i).Col.WithAlpha(s_Trail.at(i).Alpha));
 				LineItem = IGraphics::CLineItem(Pos.x, Pos.y, NextPos.x, NextPos.y);
 				Graphics()->LinesDraw(&LineItem, 1);
 			}
 			else
 			{
-				vec2 Top = Trail.at(i).Top;
-				vec2 Bot = Trail.at(i).Bot;
+				vec2 Top = s_Trail.at(i).Top;
+				vec2 Bot = s_Trail.at(i).Bot;
 
-				vec2 NextTop = Trail.at(i + 1).Top;
-				vec2 NextBot = Trail.at(i + 1).Bot;
-				if(Trail.at(i).Flip)
+				vec2 NextTop = s_Trail.at(i + 1).Top;
+				vec2 NextBot = s_Trail.at(i + 1).Bot;
+				if(s_Trail.at(i).Flip)
 				{
-					Top = Trail.at(i).Bot;
-					Bot = Trail.at(i).Top;
+					Top = s_Trail.at(i).Bot;
+					Bot = s_Trail.at(i).Top;
 				}
 
-				ColorRGBA ColNow = Trail.at(i).Col.WithAlpha(Trail.at(i).Alpha);
-				ColorRGBA ColNext = Trail.at(i + 1).Col.WithAlpha(Trail.at(i + 1).Alpha);
+				ColorRGBA ColNow = s_Trail.at(i).Col.WithAlpha(s_Trail.at(i).Alpha);
+				ColorRGBA ColNext = s_Trail.at(i + 1).Col.WithAlpha(s_Trail.at(i + 1).Alpha);
 				Graphics()->SetColor4(ColNext, ColNext, ColNow, ColNow);
 				// IGraphics::CFreeformItem FreeformItem(Top.x, Top.y, Bot.x, Bot.y, NextTop.x, NextTop.y, NextBot.x, NextBot.y);
 				IGraphics::CFreeformItem FreeformItem(NextTop.x, NextTop.y, NextBot.x, NextBot.y, Top.x, Top.y, Bot.x, Bot.y);
@@ -330,6 +320,6 @@ void CTrails::OnRender()
 			Graphics()->TrianglesEnd();
 
 		GameClient()->m_aClients[ClientId].m_aPredPos[PredTick % 200] = SavedTempPredPos;
-		m_PositionHistory[ClientId][GameTick % 200] = CurServerPos;
+		m_PositionHistory[ClientId][GameTick % 200].m_Pos = CurServerPos;
 	}
 }
