@@ -154,7 +154,9 @@ char *EscapeJson(char *pBuffer, int BufferSize, const char *pString)
 			{
 				break;
 			}
-			str_format(pBuffer, BufferSize, "\\u%04x", c);
+			// +1 for null termination or this would be truncated with `BufferSize == 6`.
+			// We know this fits because space for null termination is reserved early.
+			str_format(pBuffer, BufferSize + 1, "\\u%04x", c);
 			pBuffer += 6;
 			BufferSize -= 6;
 		}
