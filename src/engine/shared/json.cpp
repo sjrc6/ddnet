@@ -23,7 +23,7 @@ static bool JsonValidateUtf8Recursive(const json_value *pValue)
 			const char *pName = pValue->u.object.values[i].name;
 			if(!str_utf8_check(pName))
 				return false;
-			if(!JsonValidateUtf8Recursive(&(*pValue)[i]))
+			if(!JsonValidateUtf8Recursive(pValue->u.object.values[i].value))
 				return false;
 		}
 		return true;

@@ -1,6 +1,34 @@
+#include <base/str.h>
+
 #include <engine/shared/json.h>
 
 #include <gtest/gtest.h>
+
+static void TestParseValidation(const char *pJson, bool ExpectedSuccess)
+{
+	json_value *pParsed = JsonParse(pJson, str_length(pJson));
+	EXPECT_EQ(pParsed != nullptr, ExpectedSuccess) << "Expected parsing to " << (ExpectedSuccess ? "succeed" : "fail") << " for '" << pJson << "'";
+	json_value_free(pParsed);
+}
+
+TEST(Json, ParseValidation)
+{
+	TestParseValidation("\"a\"", true);
+	TestParseValidation("\"\xff\"", false);
+	TestParseValidation("[\"a\"]", true);
+	TestParseValidation("[\"\xff\"]", false);
+	TestParseValidation("[[[[[\"a\"]]]]]", true);
+	TestParseValidation("[[[[[\"\xff\"]]]]]", false);
+	TestParseValidation("{\"a\": \"b\"}", true);
+	TestParseValidation("{\"\xff\": \"b\"}", false);
+	TestParseValidation("{\"a\": \"\xff\"}", false);
+	TestParseValidation("{\"\xff\": \"\xff\"}", false);
+	TestParseValidation("{\"a\": {\"a\": \"b\"}}", true);
+	TestParseValidation("{\"a\": {\"\xff\": \"b\"}}", false);
+	TestParseValidation("{\"a\": {\"a\": \"\xff\"}}", false);
+	TestParseValidation("{\"a\": [{\"a\": \"b\"}]}", true);
+	TestParseValidation("{\"a\": [{\"a\": \"\xff\"}]}", false);
+}
 
 TEST(Json, Escape)
 {
