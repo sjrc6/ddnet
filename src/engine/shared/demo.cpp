@@ -452,7 +452,8 @@ void CDemoRecorder::AddDemoMarker()
 
 void CDemoRecorder::AddDemoMarker(int Tick)
 {
-	dbg_assert(Tick >= 0, "invalid marker tick");
+	dbg_assert(Tick >= m_FirstTick && Tick <= m_LastTickMarker, "Invalid marker tick: %d", Tick);
+
 	if(m_NumTimelineMarkers >= MAX_TIMELINE_MARKERS)
 	{
 		if(m_pConsole)
@@ -879,6 +880,14 @@ int CDemoPlayer::Load(IStorage *pStorage, IConsole *pConsole, const char *pFilen
 		return -1;
 	}
 
+	// Scan the file for interesting points
+	if(ScanFile() == EScanFileResult::ERROR_UNRECOVERABLE)
+	{
+		Stop("Error scanning demo file");
+		return -1;
+	}
+	m_Info.m_LiveStateUpdating = true;
+
 	if(m_Info.m_Header.m_Version > gs_OldVersion)
 	{
 		// get timeline markers
@@ -887,16 +896,13 @@ int CDemoPlayer::Load(IStorage *pStorage, IConsole *pConsole, const char *pFilen
 		for(int i = 0; i < m_Info.m_Info.m_NumTimelineMarkers; i++)
 		{
 			m_Info.m_Info.m_aTimelineMarkers[i] = bytes_be_to_uint(m_Info.m_TimelineMarkers.m_aTimelineMarkers[i]);
+			if(!in_range(m_Info.m_Info.m_aTimelineMarkers[i], m_Info.m_Info.m_FirstTick, m_Info.m_Info.m_LastTick))
+			{
+				Stop("Invalid demo timeline marker");
+				return -1;
+			}
 		}
 	}
-
-	// Scan the file for interesting points
-	if(ScanFile() == EScanFileResult::ERROR_UNRECOVERABLE)
-	{
-		Stop("Error scanning demo file");
-		return -1;
-	}
-	m_Info.m_LiveStateUpdating = true;
 
 	// reset slice markers
 	g_Config.m_ClDemoSliceBegin = -1;
